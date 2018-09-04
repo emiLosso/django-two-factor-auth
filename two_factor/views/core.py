@@ -1,6 +1,7 @@
 import logging
 from base64 import b32encode
 from binascii import unhexlify
+from datetime import date, datetime, timedelta
 
 import django_otp
 import qrcode
@@ -10,6 +11,7 @@ from django.contrib.auth import REDIRECT_FIELD_NAME, login as login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.sites.shortcuts import get_current_site
+from django.core.signing import BadSignature, SignatureExpired
 from django.core.urlresolvers import reverse
 from django.forms import Form
 from django.http import Http404, HttpResponse
@@ -24,8 +26,8 @@ from django_otp.decorators import otp_required
 from django_otp.plugins.otp_static.models import StaticDevice, StaticToken
 from django_otp.util import random_hex
 
-from two_factor import signals
-from two_factor.models import get_available_methods
+from two_factor.models import TrustedAgent, get_available_methods
+from two_factor.templatetags.device_format import agent_format
 from two_factor.utils import totp_digits
 
 from ..forms import (
@@ -70,10 +72,12 @@ class LoginView(IdempotentSessionWizardView):
     }
 
     def has_token_step(self):
-        return default_device(self.get_user())
+        return self.token_required(self.request) and \
+            default_device(self.get_user())
 
     def has_backup_step(self):
-        return default_device(self.get_user()) and \
+        return self.token_required(self.request) and \
+            default_device(self.get_user()) and \
             'token' not in self.storage.validated_step_data
 
     condition_dict = {
@@ -102,17 +106,50 @@ class LoginView(IdempotentSessionWizardView):
         """
         Login the user and redirect to the desired page.
         """
-        login(self.request, self.get_user())
+        # if no token is required, populate user.otp_device
+        # so OTPRequiredMixin will grant access
+        user = self.get_user()
+        if not self.token_required(self.request):
+            user.otp_device = self.get_device()
+            user.otp_device.token_step_skipped = True
+        login(self.request, user)
 
         redirect_to = self.request.GET.get(self.redirect_field_name, '')
         if not is_safe_url(url=redirect_to, host=self.request.get_host()):
             redirect_to = resolve_url(settings.LOGIN_REDIRECT_URL)
 
+        response = redirect(redirect_to)
         device = getattr(self.get_user(), 'otp_device', None)
         if device:
+            from two_factor import signals
+            if self.save_trusted_agent(self.request, device):  # True means new device
+                signals.login_alert(sender=__name__, request=self.request)
             signals.user_verified.send(sender=__name__, request=self.request,
                                        user=self.get_user(), device=device)
-        return redirect(redirect_to)
+            step_key = 'backup' if self.has_backup_step() else 'token'
+            form_obj = self.get_form(step=step_key, data=self.storage.get_step_data(step_key))
+            if form_obj['remember'].value() is True:
+                login_good_until = str(date.today() +
+                                       timedelta(days=settings.TWO_FACTOR_TRUSTED_DAYS))
+                salt = hash(settings.TWO_FACTOR_SALT + str(user.id) +
+                            agent_format(self.request.META['HTTP_USER_AGENT']))
+                response.set_signed_cookie(key='rememberdevice', value=login_good_until,
+                                           salt=str(salt),
+                                           max_age=settings.TWO_FACTOR_TRUSTED_DAYS * (3600 * 24),
+                                           expires=login_good_until, path=settings.LOGIN_URL, domain=None,
+                                           secure=None, httponly=True)
+        return response
+
+    def save_trusted_agent(self, request, device):
+        # from pprint import pprint
+        # pprint(request.META)
+        (trusted, created) = TrustedAgent.objects.get_or_create(user=request.user,
+                                                                user_agent=request.META['HTTP_USER_AGENT'])
+        trusted.yubi = device if isinstance(device, RemoteYubikeyDevice) else None
+        trusted.phone = device if isinstance(device, PhoneDevice) else None
+        trusted.ip = request.META['REMOTE_ADDR']
+        trusted.save()
+        return created
 
     def get_form_kwargs(self, step=None):
         """
@@ -183,6 +220,39 @@ class LoginView(IdempotentSessionWizardView):
 
         context['cancel_url'] = resolve_url(settings.LOGOUT_URL)
         return context
+
+    def token_required(self, request):
+        """
+        if this user logged with a token in the last {{TWO_FACTOR_TRUSTED_DAYS}}
+        days, they can skip the token steps.
+        """
+        user = self.get_user()
+        if not user:
+            return True
+        end_valid_login = None
+        if not request.COOKIES.get('rememberdevice'):
+            return True
+        trusted_agent = self.get_trusted_agent(request, user)
+        if not trusted_agent:
+            return True
+        try:
+            salt = hash(settings.TWO_FACTOR_SALT + str(user.id) + agent_format(self.request.META['HTTP_USER_AGENT']))
+            end_valid_login = request.get_signed_cookie('rememberdevice', salt=str(salt))
+        except (BadSignature, SignatureExpired):
+            return True
+        end_valid_login_dt = datetime.strptime(end_valid_login, '%Y-%m-%d')
+        if datetime.today() < end_valid_login_dt:
+            # the cookie is valid and still within {{TWO_FACTOR_TRUSTED_DAYS}}
+            return False
+        else:
+            return True
+
+    def get_trusted_agent(self, request, user):
+        try:
+            trusted_agent = TrustedAgent.objects.get(user=user, user_agent=request.META['HTTP_USER_AGENT'])
+        except TrustedAgent.DoesNotExist:
+            trusted_agent = None
+        return trusted_agent
 
 
 @class_view_decorator(never_cache)

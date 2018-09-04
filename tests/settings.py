@@ -22,6 +22,7 @@ INSTALLED_APPS = [
     'django_otp.plugins.otp_totp',
     'two_factor',
     'tests',
+    'otp_yubikey',
 ]
 
 if otp_yubikey:
@@ -83,5 +84,7 @@ TEMPLATES = [
 ]
 
 TWO_FACTOR_PATCH_ADMIN = False
+TWO_FACTOR_TRUSTED_DAYS = 30
+TWO_FACTOR_SALT = 'Ra74aAB404'
 
 AUTH_USER_MODEL = os.environ.get('AUTH_USER_MODEL', 'auth.User')

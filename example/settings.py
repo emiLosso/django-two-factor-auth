@@ -3,6 +3,9 @@ import os
 from django.core.urlresolvers import reverse_lazy
 
 DEBUG = True
+
+ALLOWED_HOSTS = ['*']
+
 TEMPLATE_DEBUG = DEBUG
 
 PROJECT_PATH = os.path.abspath(os.path.dirname(__file__))
@@ -21,6 +24,8 @@ AUTHENTICATION_BACKENDS = (
 )
 
 TIME_ZONE = 'Europe/Amsterdam'
+
+USE_TZ = True
 
 # Make this unique, and don't share it with anybody.
 SECRET_KEY = 'DO NOT USE THIS KEY!'
@@ -58,7 +63,7 @@ INSTALLED_APPS = (
     'django_otp.plugins.otp_totp',
     'two_factor',
     'example',
-
+    'otp_yubikey',
     'debug_toolbar',
     'bootstrapform'
 )
@@ -89,6 +94,8 @@ LOGGING = {
 
 TWO_FACTOR_CALL_GATEWAY = 'example.gateways.Messages'
 TWO_FACTOR_SMS_GATEWAY = 'example.gateways.Messages'
+TWO_FACTOR_TRUSTED_DAYS = 30
+TWO_FACTOR_SALT = 'Ra74aAB404'
 PHONENUMBER_DEFAULT_REGION = 'NL'
 
 SESSION_ENGINE = 'user_sessions.backends.db'

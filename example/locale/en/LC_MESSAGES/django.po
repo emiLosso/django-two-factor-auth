@@ -31,6 +31,10 @@ msgstr "Fake SMS to %(number)s: \"Your token is: %(token)s\""
 msgid "Toggle navigation"
 msgstr "Toggle navigation"
 
+#: forms.py:146
+msgid "Remember this device for %s days"
+msgstr "Remember this device for %s days"
+
 #: templates/_base.html:25 templates/two_factor/_base_focus.html:8
 msgid "Demo"
 msgstr "Demo"
